@@ -1,0 +1,21 @@
+[Unit]
+Description=PXE MAP API
+After=network.target
+
+[Service]
+Type=simple
+User=pxe-map-api
+Group=pxe-map-api
+EnvironmentFile=/etc/pxe-map-api/env
+WorkingDirectory=/opt/pxe-map-api
+ExecStart=/bin/sh -c '/opt/pxe-map-api/.venv/bin/uvicorn app.main:app --host "${PXE_MAP_BIND%%:*}" --port "${PXE_MAP_BIND##*:}"'
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/www/pxe-map
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
