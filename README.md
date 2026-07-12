@@ -45,7 +45,7 @@ export PXE_MAP_DIR=/tmp/pxe-map-test
 export PXE_MAP_TOKEN=dev-token
 mkdir -p "$PXE_MAP_DIR"
 
-.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
 ## Tests
@@ -61,6 +61,10 @@ rejection, idempotent delete). `tests/test_api.py` covers the HTTP layer:
 full CRUD round-trip, auth, and the POST/PATCH/PUT status-code semantics.
 
 ## Deployment (RHEL 9.4, SELinux enforcing)
+
+See `DEPLOY.md` for the full step-by-step VM deployment guide (prereqs,
+running `install.sh`, verifying end-to-end, upgrading, uninstalling).
+Quick version:
 
 ```bash
 sudo deploy/install.sh
@@ -84,16 +88,22 @@ Before starting the service:
 
 ### Bind address
 
-Default: `PXE_MAP_BIND=127.0.0.1:8000` - the narrowest option. The service
-only needs to be reachable by the central BMH-creation endpoint, never by
-booting hosts (they only ever talk to nginx on port 80 for
-`/pxe-map/<mac>.ipxe`). Pair the localhost-only default with an SSH tunnel
-or a bastion so the central endpoint can still reach it.
+Default: `PXE_MAP_BIND=0.0.0.0:8080` - listens on every interface on the
+VM. This is wider than SPEC.md's "narrowest sensible option" guidance
+(the service only needs to be reachable by the central BMH-creation
+endpoint, never by booting hosts). Bearer-token auth still protects every
+route except `/healthz`, but if you want defense in depth:
 
-If the central endpoint must reach this VM directly over the network,
-change `PXE_MAP_BIND` to the site VM's management-facing interface
-(IP:port), not `0.0.0.0`, and specifically not the interface that serves
-PXE/TFTP/nginx traffic to booting hosts.
+- Restrict with a host firewall, e.g.
+  `firewall-cmd --add-rich-rule='rule family="ipv4" source address=<bmh-endpoint-ip> port port=8080 protocol=tcp accept'`
+  and drop 8080 by default.
+- Or narrow `PXE_MAP_BIND` to the site VM's management-facing interface
+  IP:port instead of `0.0.0.0`.
+- Or bind `127.0.0.1:8080` and reach it over an SSH tunnel / bastion if
+  the central endpoint doesn't need direct network access.
+
+Whichever you choose, never bind on the interface that serves PXE/TFTP/nginx
+traffic to booting hosts.
 
 ### nginx (existing, not managed by this service)
 
