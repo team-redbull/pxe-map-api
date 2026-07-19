@@ -1,5 +1,0 @@
----
-# ansible-galaxy collection install -r requirements.yml
-collections:
-  - name: community.general   # sefcontext (SELinux fcontext management)
-  - name: ansible.posix        # not strictly required today, kept for common RHEL role needs

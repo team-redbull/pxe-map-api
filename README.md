@@ -67,12 +67,15 @@ full CRUD round-trip, auth, and the POST/PATCH/PUT status-code semantics.
 
 ## Deployment (RHEL 9.4, SELinux enforcing, 5 site VMs via Ansible)
 
-See `DEPLOY.md` for the full step-by-step guide (prereqs, inventory setup,
-per-site tokens via `ansible-vault`, verifying end-to-end, upgrading).
-Quick version, from a checkout of this repo:
+Deployment automation lives in a **separate** repo,
+`pxe-map-api-ansible` - see `DEPLOY.md` here for the short version and a
+pointer, and that repo's own `DEPLOY.md` for the full step-by-step guide
+(prereqs, inventory setup, per-site tokens via `ansible-vault`, verifying
+end-to-end, upgrading). Quick version, with both repos checked out as
+siblings:
 
 ```bash
-cd ansible
+cd ../pxe-map-api-ansible
 ansible-galaxy collection install -r requirements.yml
 # edit inventory/hosts.yml (real hostnames) and, per site, generate +
 # ansible-vault-encrypt a token in inventory/host_vars/<site>/vault.yml -
@@ -82,8 +85,8 @@ ansible-playbook site.yml --ask-vault-pass
 
 This creates the `pxe-map-api` system user, creates `/var/www/pxe-map`
 (`0755`, files `0644`, owned by that user), registers the persistent
-SELinux fcontext (`httpd_sys_content_t`) and runs `restorecon`, installs the
-app under `/opt/pxe-map-api` with its own venv (installed from a local
+SELinux fcontext (`httpd_sys_content_t`) and runs `restorecon`, installs
+this app under `/opt/pxe-map-api` with its own venv (installed from a local
 package mirror - air-gapped, no PyPI access), renders `/etc/pxe-map-api/env`
 and the systemd unit from that site's inventory vars, and enables +
 starts the `pxe-map-api` service. It does not disable SELinux or loosen
@@ -107,7 +110,7 @@ route except `/healthz`, but if you want defense in depth:
   and drop 8080 by default.
 - Or narrow `PXE_MAP_BIND` to the site VM's management-facing interface
   IP:port instead of `0.0.0.0` - set `pxe_map_api_bind` in that site's
-  `ansible/inventory/host_vars/<site>/vars.yml`.
+  `inventory/host_vars/<site>/vars.yml` in the `pxe-map-api-ansible` repo.
 - Or bind `127.0.0.1:8080` and reach it over an SSH tunnel / bastion if
   the central endpoint doesn't need direct network access.
 

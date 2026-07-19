@@ -25,12 +25,14 @@ air-gapped RHEL deployment. A `.env` file is **not** picked up automatically.
 1. `cp .env.example .env` (`.env` is git-ignored)
 2. Load it before running the server: `set -a; source .env; set +a`
 
-Production (5 site VMs) renders `/etc/pxe-map-api/env` from Ansible
-inventory vars, loaded via systemd's `EnvironmentFile=` instead - see
-`ansible/roles/pxe_map_api/templates/env.j2` and `DEPLOY.md`. Per-site
-tokens live `ansible-vault`-encrypted in
-`ansible/inventory/host_vars/<site>/vault.yml`, not hand-edited on the VM
-after install like the old `deploy/install.sh` did.
+Production (5 site VMs) is deployed from a **separate** repo,
+`pxe-map-api-ansible` (checked out as a sibling directory - the Ansible
+role copies `app/` and `requirements.txt` from here into each VM). It renders
+`/etc/pxe-map-api/env` from per-site inventory vars, loaded via systemd's
+`EnvironmentFile=`. Per-site tokens live `ansible-vault`-encrypted there,
+not hand-edited on the VM after install. See that repo's `DEPLOY.md` for
+the full guide; see its `CLAUDE.md` if you're changing the deployment
+automation itself - none of that lives in this repo anymore.
 
 `PXE_MAP_DIR` is required - `Config()` raises `RuntimeError` at startup
 (not a bare `KeyError`) if it's unset. `PXE_MAP_BIND` is optional, defaults
@@ -84,13 +86,12 @@ Follows FastAPI's official "Bigger Applications - Multiple Files" layout
   handlers, installs the request-logging middleware (`@app.middleware`,
   logs every request exactly once regardless of which router/handler
   produced the response), includes the routers.
-- `ansible/` - deployment, replacing the old hand-run `deploy/install.sh`.
-  `site.yml` + `roles/pxe_map_api/` install/configure/restart the service
-  on all 5 site VMs (or `--limit <site>` for one); `inventory/hosts.yml`
-  lists the 5 VMs, `inventory/group_vars/pxe_map_api_sites.yml` holds
-  shared vars (pip mirror path, `PXE_MAP_DIR`), and each
-  `inventory/host_vars/<site>/` holds that site's overrides plus its
-  `ansible-vault`-encrypted `PXE_MAP_TOKEN`. See `DEPLOY.md`.
+
+There is no `deploy/` or `ansible/` directory in this repo - deployment
+automation for all 5 site VMs lives in the separate `pxe-map-api-ansible`
+repo (see "Local env" above and `DEPLOY.md`). Don't recreate deployment
+tooling here; that repo copies `app/` and `requirements.txt` from a
+checkout of this one.
 
 ## Conventions / constraints (do not relax without re-reading SPEC.md)
 

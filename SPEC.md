@@ -97,10 +97,11 @@ dedicated user, and files are owned by that user (not world-writable).
 Note: this tree is the original build spec. The actual layout evolved as
 the service grew (see CLAUDE.md's "Architecture" section for the current,
 accurate file-by-file breakdown - `app/` is now several files following
-FastAPI's own multi-file layout, and `deploy/` was replaced by an
-`ansible/` playbook covering all 5 site VMs - see §7 below and DEPLOY.md).
-The rest of this document (§0-6, §8-10) still describes *why* the app's
-safety checks exist and is unchanged.
+FastAPI's own multi-file layout). Deployment automation (originally
+`deploy/`) now lives in a separate repo, `pxe-map-api-ansible` - not a
+subdirectory of this one - see §7 below and DEPLOY.md. The rest of this
+document (§0-6, §8-10) still describes *why* the app's safety checks exist
+and is unchanged.
 
 pxe-map-api/
 ├── app/
@@ -111,9 +112,10 @@ pxe-map-api/
 ├── tests/
 │   ├── test_mapping.py    # unit tests for mapping.py (the correctness-critical bits)
 │   └── test_api.py        # API tests incl. auth
-├── ansible/                # deployment automation, see §7 and DEPLOY.md
 ├── requirements.txt
 └── README.md
+
+(deployment automation lives in the sibling pxe-map-api-ansible repo, not here)
 
 
 3. API surface (full CRUD)
@@ -232,12 +234,13 @@ secrets.compare_digest (constant-time). 401 on mismatch/absent.
 
 7. Packaging / deploy
 
-Superseded by an Ansible playbook (`ansible/`, see DEPLOY.md) that installs
-this service on all 5 site VMs, but the requirements it satisfies are
-unchanged from the original design:
+Superseded by an Ansible playbook in a separate repo,
+`pxe-map-api-ansible` (see this repo's DEPLOY.md), that installs this
+service on all 5 site VMs, but the requirements it satisfies are unchanged
+from the original design:
 
-pxe-map-api.service (rendered from ansible/roles/pxe_map_api/templates/
-pxe-map-api.service.j2): runs as user pxe-map-api,
+pxe-map-api.service (rendered from that repo's
+roles/pxe_map_api/templates/pxe-map-api.service.j2): runs as user pxe-map-api,
 EnvironmentFile=/etc/pxe-map-api/env, Restart=on-failure.
 Bind address from PXE_MAP_BIND. The API must be reachable by the central BMH
 endpoint but does NOT need to be reachable by booting hosts — bind as narrowly
