@@ -1,0 +1,11 @@
+---
+# Shared across all 5 sites. Per-site overrides (token, bind, etc.) live in
+# inventory/host_vars/<site>/.
+
+# Set this to your air-gapped pip mirror before running the playbook - see
+# DEPLOY.md. Same requirement as the old deploy/install.sh's LOCAL_MIRROR.
+pxe_map_api_local_mirror: /path/to/local/pip-mirror
+
+# Same on every site VM today (nginx is already configured to serve this
+# path read-only - see SPEC.md). Override per-host if a site differs.
+pxe_map_api_dir: /var/www/pxe-map

@@ -1,0 +1,29 @@
+---
+- name: Create the pxe-map-api system group
+  ansible.builtin.group:
+    name: "{{ pxe_map_api_group }}"
+    system: true
+    state: present
+
+- name: Create the pxe-map-api system user (no login shell, no home dir)
+  ansible.builtin.user:
+    name: "{{ pxe_map_api_user }}"
+    group: "{{ pxe_map_api_group }}"
+    system: true
+    create_home: false
+    shell: /sbin/nologin
+    state: present
+
+- name: Create PXE_MAP_DIR
+  ansible.builtin.file:
+    path: "{{ pxe_map_api_dir }}"
+    state: directory
+    owner: "{{ pxe_map_api_user }}"
+    group: "{{ pxe_map_api_group }}"
+    mode: "0755"
+
+- name: Normalize permissions on any mapping files already in PXE_MAP_DIR
+  ansible.builtin.command:
+    cmd: >-
+      find {{ pxe_map_api_dir | quote }} -maxdepth 1 -type f -exec chmod 0644 {} +
+  changed_when: false  # chmod is idempotent; not worth tracking as a "change" each run

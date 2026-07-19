@@ -1,0 +1,6 @@
+# Per-site secret for pxe-site5. See host_vars/pxe-site1/vault.yml.example
+# for the full explanation - same steps apply here:
+#   cp vault.yml.example vault.yml
+#   openssl rand -hex 32          # generate a token UNIQUE to this site
+#   ansible-vault encrypt inventory/host_vars/pxe-site5/vault.yml
+pxe_map_api_token: "REPLACE_ME_WITH_openssl_rand_-hex_32_OUTPUT"

@@ -1,0 +1,37 @@
+---
+# Mirrors app/config.py's own runtime behavior at deploy time: PXE_MAP_TOKEN
+# is optional in the app (auth is skipped with a loud warning if unset), but
+# deploying 5 site VMs unauthenticated by accident is a much bigger blast
+# radius than one dev forgetting a local .env - so the playbook refuses to
+# proceed unless the omission is explicit.
+- name: Refuse to deploy without a token unless no-auth is explicitly requested
+  ansible.builtin.assert:
+    that:
+      - (pxe_map_api_token | default('') | length > 0) or pxe_map_api_allow_no_auth
+    fail_msg: >-
+      pxe_map_api_token is empty for {{ inventory_hostname }}, which means
+      every route would be UNAUTHENTICATED and reachable on
+      {{ pxe_map_api_bind }}. Set pxe_map_api_token in
+      inventory/host_vars/{{ inventory_hostname }}/vault.yml (see
+      vault.yml.example), or set pxe_map_api_allow_no_auth: true in
+      inventory/host_vars/{{ inventory_hostname }}/vars.yml if this is
+      genuinely intentional.
+    success_msg: >-
+      pxe_map_api_token is set (or no-auth explicitly allowed) for
+      {{ inventory_hostname }}
+
+- name: Verify the app source is where pxe_map_api_src_dir points
+  ansible.builtin.stat:
+    path: "{{ pxe_map_api_src_dir }}/app/main.py"
+  delegate_to: localhost
+  become: false
+  register: _pxe_map_api_src_check
+
+- name: Fail with a clear message if app/ isn't found on the control node
+  ansible.builtin.assert:
+    that: _pxe_map_api_src_check.stat.exists | default(false)
+    fail_msg: >-
+      {{ pxe_map_api_src_dir }}/app/main.py not found on the control node.
+      Run ansible-playbook from within a checkout of the pxe-map-api repo
+      (the default pxe_map_api_src_dir assumes ansible/ is a subdirectory
+      of it), or set pxe_map_api_src_dir to point at one.

@@ -94,6 +94,14 @@ dedicated user, and files are owned by that user (not world-writable).
 
 2. Files to produce (name them exactly)
 
+Note: this tree is the original build spec. The actual layout evolved as
+the service grew (see CLAUDE.md's "Architecture" section for the current,
+accurate file-by-file breakdown - `app/` is now several files following
+FastAPI's own multi-file layout, and `deploy/` was replaced by an
+`ansible/` playbook covering all 5 site VMs - see §7 below and DEPLOY.md).
+The rest of this document (§0-6, §8-10) still describes *why* the app's
+safety checks exist and is unchanged.
+
 pxe-map-api/
 ├── app/
 │   ├── __init__.py
@@ -103,10 +111,7 @@ pxe-map-api/
 ├── tests/
 │   ├── test_mapping.py    # unit tests for mapping.py (the correctness-critical bits)
 │   └── test_api.py        # API tests incl. auth
-├── deploy/
-│   ├── pxe-map-api.service    # systemd unit
-│   ├── install.sh             # create user, dir, SELinux fcontext, install unit
-│   └── env.example            # PXE_MAP_TOKEN=..., PXE_MAP_DIR=..., PXE_MAP_BIND=...
+├── ansible/                # deployment automation, see §7 and DEPLOY.md
 ├── requirements.txt
 └── README.md
 
@@ -227,17 +232,27 @@ secrets.compare_digest (constant-time). 401 on mismatch/absent.
 
 7. Packaging / deploy
 
+Superseded by an Ansible playbook (`ansible/`, see DEPLOY.md) that installs
+this service on all 5 site VMs, but the requirements it satisfies are
+unchanged from the original design:
 
-deploy/pxe-map-api.service: runs as user pxe-map-api,
+pxe-map-api.service (rendered from ansible/roles/pxe_map_api/templates/
+pxe-map-api.service.j2): runs as user pxe-map-api,
 EnvironmentFile=/etc/pxe-map-api/env, Restart=on-failure.
 Bind address from PXE_MAP_BIND. The API must be reachable by the central BMH
 endpoint but does NOT need to be reachable by booting hosts — bind as narrowly
 as the network allows (localhost + tunnel, or the management-facing interface).
 Document the choice in README; default to the narrowest sensible option.
-install.sh: create pxe-map-api user; create /var/www/pxe-map owned by it
-(dir 0755, files 0644); run the SELinux fcontext + restorecon; install and
-enable the systemd unit; print where to put the token.
-Air-gapped: requirements.txt pinned; assume install from local mirror.
+(Current default is wider than this guidance for operational convenience -
+see README.md's "Bind address" section for the tradeoff and how to narrow
+it per site.)
+The ansible role: creates the pxe-map-api user; creates /var/www/pxe-map
+owned by it (dir 0755, files 0644); runs the SELinux fcontext + restorecon;
+renders and installs the env file + systemd unit from per-site inventory
+vars; enables and starts the service. One token per site
+(ansible-vault-encrypted), not shared across sites.
+Air-gapped: requirements.txt pinned; installed from a local mirror via
+`pip install --no-index --find-links=<mirror>`, same as before.
 
 
 

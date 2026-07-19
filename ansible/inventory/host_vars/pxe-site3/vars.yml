@@ -1,0 +1,4 @@
+---
+# Non-secret per-site overrides for pxe-site3. See
+# host_vars/pxe-site1/vars.yml for the full explanation of what can go here
+# (e.g. pxe_map_api_bind).

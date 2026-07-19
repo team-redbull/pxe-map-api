@@ -1,0 +1,6 @@
+---
+- name: Install and configure pxe-map-api on every site PXE VM
+  hosts: pxe_map_api_sites
+  become: true
+  roles:
+    - pxe_map_api

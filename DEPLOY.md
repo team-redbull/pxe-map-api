@@ -1,102 +1,129 @@
-# Deploying pxe-map-api on a site PXE VM
+# Deploying pxe-map-api to the site PXE VMs (Ansible)
 
-Target: RHEL 9.4, SELinux enforcing, one instance per site, already running
-dnsmasq (TFTP) and nginx serving `/var/www/pxe-map/` read-only (see
-`SPEC.md` for that existing setup - this guide only covers this service).
+Target: 5 site PXE VMs (RHEL 9.4, SELinux enforcing), one per site, each
+already running dnsmasq (TFTP) and nginx serving `/var/www/pxe-map/`
+read-only (see `SPEC.md` for that existing setup - this guide only covers
+this service). All 5 are installed and updated from the single
+`ansible/` playbook in this repo.
 
 ## 0. Prerequisites
 
-- Root (or sudo) access on the PXE VM.
-- The repo copied onto the VM (air-gapped: no `git clone` from the
-  internet, no `pip install` from PyPI). Bring it over via your usual
-  offline transfer method (e.g. `scp` from a jump host, or a tarball via
-  removable media).
-- A local pip package mirror reachable from the VM, containing
+- A control node with SSH access to all 5 site VMs and `sudo`/root on each.
+- `ansible-core` >= 2.15 on the control node:
+  `python3 -m pip install --user ansible-core` (or your distro package).
+- The required collections:
+  ```bash
+  cd ansible
+  ansible-galaxy collection install -r requirements.yml
+  ```
+- A local pip package mirror reachable from every site VM, containing
   `fastapi==0.115.6`, `uvicorn==0.34.0`, `pydantic==2.10.4` and their
-  transitive deps (see `requirements.txt`).
-- `python3` (3.11+) and `semanage`/`restorecon` (RHEL 9.4 has these by
-  default; `semanage` comes from `policycoreutils-python-utils` if
-  missing: `dnf install policycoreutils-python-utils`).
+  transitive deps (see `requirements.txt`). Air-gapped: the role runs
+  `pip install --no-index --find-links=<mirror>` - it never touches PyPI.
+- You run `ansible-playbook` from within a checkout of this repo (the
+  role's default `pxe_map_api_src_dir` assumes `ansible/` is a
+  subdirectory of it, and copies `app/` + `requirements.txt` from there).
 
-## 1. Copy the repo onto the VM
+## 1. Point the inventory at your real VMs
+
+Edit `ansible/inventory/hosts.yml` and replace the 5 placeholder
+`ansible_host` values (`pxe-site1.example.com` ... `pxe-site5.example.com`)
+with your real per-site PXE VM hostnames or IPs. The `pxe-site1` ...
+`pxe-site5` names on the left are just inventory aliases - rename them to
+match your sites if that's clearer (and rename the matching
+`inventory/host_vars/<name>/` directory to match).
+
+## 2. Set the local pip mirror
+
+Edit `ansible/inventory/group_vars/pxe_map_api_sites.yml`:
+
+```yaml
+pxe_map_api_local_mirror: /path/to/your/local/pip-mirror
+```
+
+Override per-site in `inventory/host_vars/<site>/vars.yml` if a site's
+mirror path differs.
+
+## 3. Generate and vault a token per site
+
+**Do not reuse one token across all 5 sites** - if one site's PXE VM is
+compromised, the others must not be. For each site:
 
 ```bash
-scp -r pxe-map-api/ root@<pxe-vm>:/root/pxe-map-api-src
-ssh root@<pxe-vm>
+cd ansible/inventory/host_vars/pxe-site1   # repeat for site2..site5
+cp vault.yml.example vault.yml
+openssl rand -hex 32   # paste the output as pxe_map_api_token in vault.yml
+ansible-vault encrypt vault.yml
 ```
 
-## 2. Point install.sh at your local mirror
+You'll be prompted for a vault password (same or different per site, your
+choice) - keep it somewhere safe; you need it on every future playbook run.
+`vault.yml` (encrypted) is safe to commit; never commit the plaintext.
 
-Edit `deploy/install.sh` on the VM (or before copying it over) and set:
+If you deliberately want a site to run unauthenticated (not recommended -
+see `CLAUDE.md`), skip the token and set `pxe_map_api_allow_no_auth: true`
+in that site's `vars.yml` instead. The playbook's preflight check refuses
+to deploy an empty token otherwise.
+
+## 4. Review the bind address per site
+
+Default (`ansible/roles/pxe_map_api/defaults/main.yml`):
+`pxe_map_api_bind: "0.0.0.0:8080"` - listens on every interface. This is
+wider than SPEC.md's "narrowest sensible option" guidance (the service
+only needs to be reachable by the central BMH-creation endpoint, never by
+booting hosts). Bearer-token auth still protects every route except
+`/healthz`, but for defense in depth, override per site in
+`inventory/host_vars/<site>/vars.yml`:
+
+```yaml
+pxe_map_api_bind: "10.10.1.5:8080"   # this site's management-facing IP
+```
+
+or firewall 8080 down to the central endpoint's source IP on each VM.
+Never bind on the interface that serves PXE/TFTP/nginx traffic to booting
+hosts.
+
+## 5. Run it
 
 ```bash
-LOCAL_MIRROR="/path/to/your/local/pip-mirror"
+cd ansible
+ansible-playbook site.yml --ask-vault-pass
 ```
 
-to wherever your air-gapped mirror actually lives (a local directory, an
-internal `pip.conf` index-url, or a mounted share with wheel files -
-`--find-links` accepts a local path).
+(`--vault-password-file <path>` instead of `--ask-vault-pass` if you keep
+the vault password in a file - keep that file out of git.)
 
-## 3. Run the installer
+This targets all 5 sites in parallel by default. To roll out to one site
+first: `ansible-playbook site.yml --ask-vault-pass --limit pxe-site1`.
+
+The role, in order, on each VM:
+
+1. Fails the run (preflight) if that site has no token and hasn't
+   explicitly opted into `pxe_map_api_allow_no_auth`, or if `app/` isn't
+   found on the control node.
+2. Creates the `pxe-map-api` system user (no login shell, no home dir).
+3. Creates `/var/www/pxe-map` (dir `0755`, existing files re-chmod'd to
+   `0644`), owned by that user.
+4. Registers the persistent SELinux fcontext rule
+   (`httpd_sys_content_t` on `/var/www/pxe-map(/.*)?`) and runs
+   `restorecon -Rv` so the label survives reboots and reruns. Skipped
+   automatically on a non-SELinux host (e.g. testing in a container).
+5. Copies `app/` and `requirements.txt` into `/opt/pxe-map-api`, creates a
+   venv there, and installs deps from the local mirror with
+   `pip install --no-index` (never touches the network).
+6. Renders `/etc/pxe-map-api/env` from that site's `vars.yml`/`vault.yml`
+   (`PXE_MAP_DIR`, `PXE_MAP_BIND`, `PXE_MAP_TOKEN`) and the systemd unit,
+   both from Jinja2 templates in `roles/pxe_map_api/templates/`.
+7. Restarts the service if the env file, unit file, or app code changed;
+   enables and starts it either way.
+
+It's idempotent - rerun any time (e.g. after a code change, or to pick up
+a rotated token) and only what actually changed gets touched.
+
+## 6. Verify end-to-end on one VM
 
 ```bash
-cd /root/pxe-map-api-src
-sudo deploy/install.sh
-```
-
-This does all of the following, in order:
-
-1. Creates the `pxe-map-api` system user (no login shell, no home dir).
-2. Creates `/var/www/pxe-map` (dir `0755`, existing files re-chmod'd to
-   `0644`), owned by `pxe-map-api`.
-3. Registers the persistent SELinux fcontext rule
-   (`semanage fcontext -a -t httpd_sys_content_t "/var/www/pxe-map(/.*)?"`)
-   and runs `restorecon -Rv` once so the label survives reboots and
-   `restorecon` reruns.
-4. Copies `app/` and `requirements.txt` into `/opt/pxe-map-api`, creates a
-   venv there, and installs deps from `LOCAL_MIRROR` with `pip install
-   --no-index` (never touches the network).
-5. Creates `/etc/pxe-map-api/env` from `deploy/env.example` (only if it
-   doesn't already exist - reruns won't clobber a token you've already set).
-6. Installs `deploy/pxe-map-api.service` to
-   `/etc/systemd/system/pxe-map-api.service`, runs `systemctl daemon-reload`,
-   and `systemctl enable`s it (does not start it yet).
-
-If any step fails (e.g. `semanage` missing, or the mirror path is wrong),
-fix the underlying issue and rerun - it's idempotent.
-
-## 4. Configure the token and bind address
-
-```bash
-sudo vi /etc/pxe-map-api/env
-```
-
-Set a real token:
-
-```
-PXE_MAP_TOKEN=$(openssl rand -hex 32)
-```
-
-(run that command and paste the output in, or generate it separately -
-don't leave `changeme`.)
-
-Review `PXE_MAP_BIND` (default `0.0.0.0:8080`, listens on every interface).
-See README.md's "Bind address" section for narrowing options (firewall
-rule, specific management IP, or localhost + SSH tunnel) - at minimum,
-confirm this VM's firewall doesn't expose 8080 on the network segment
-booting hosts use.
-
-## 5. Start it
-
-```bash
-sudo systemctl start pxe-map-api
-sudo systemctl status pxe-map-api
-sudo journalctl -u pxe-map-api -f   # tail logs while testing
-```
-
-## 6. Verify end-to-end on the VM
-
-```bash
+ssh <site-vm>
 TOKEN=$(sudo grep PXE_MAP_TOKEN /etc/pxe-map-api/env | cut -d= -f2)
 PORT=$(sudo grep PXE_MAP_BIND /etc/pxe-map-api/env | cut -d: -f2)
 
@@ -124,34 +151,43 @@ curl -sS -X DELETE localhost:${PORT}/pxe-map/aabbccddee01 \
 ```
 
 If the `ls -Z` context isn't `httpd_sys_content_t`, the SELinux fcontext
-rule from step 3 didn't take - rerun
-`semanage fcontext -a -t httpd_sys_content_t "/var/www/pxe-map(/.*)?"` and
-`restorecon -Rv /var/www/pxe-map` manually and check `sudo ausearch -m avc
--ts recent` for denials.
+rule didn't take - rerun the playbook (step 5 above) and check
+`sudo ausearch -m avc -ts recent` for denials.
+
+Also: `sudo journalctl -u pxe-map-api -f` to tail logs while testing - see
+`app/main.py`'s request-logging middleware for what gets logged per
+request.
 
 ## 7. Point the central BMH-creation endpoint at it
 
-Give the central endpoint's operators:
+Give the central endpoint's operators, per site:
 
-- This VM's reachable address and port (`PXE_MAP_BIND`).
-- The token from `/etc/pxe-map-api/env`, delivered out-of-band (not over
-  chat/email in plaintext if you can avoid it).
+- That VM's reachable address and port (`PXE_MAP_BIND`).
+- The token from `inventory/host_vars/<site>/vault.yml`, delivered
+  out-of-band (not over chat/email in plaintext if you can avoid it) -
+  `ansible-vault view inventory/host_vars/<site>/vault.yml` to read it.
 
-They call this service directly; there's nothing further to configure here.
+They call each site's service directly; there's nothing further to
+configure here. This service does not do site-selection - that's the
+caller's job.
 
-## Upgrading
+## Upgrading / rotating a token
 
 ```bash
-# on the VM, with a newer copy of the repo in /root/pxe-map-api-src
-sudo systemctl stop pxe-map-api
-sudo deploy/install.sh   # re-copies app/, reinstalls deps, refreshes the unit file
-sudo systemctl start pxe-map-api
+cd ansible
+ansible-playbook site.yml --ask-vault-pass          # all 5 sites
+ansible-playbook site.yml --ask-vault-pass --limit pxe-site3   # just one
 ```
 
-`install.sh` won't overwrite `/etc/pxe-map-api/env` if it already exists,
-so your token and bind settings survive upgrades.
+Re-copies `app/`, reinstalls deps, re-renders the env/unit files, and
+restarts the service only if something actually changed. To rotate a
+site's token: `ansible-vault edit inventory/host_vars/<site>/vault.yml`,
+then rerun the playbook for that site.
 
 ## Uninstalling
+
+Not automated (removal is rare and destructive enough to want a human
+doing it deliberately, not a playbook flag). On the VM:
 
 ```bash
 sudo systemctl disable --now pxe-map-api

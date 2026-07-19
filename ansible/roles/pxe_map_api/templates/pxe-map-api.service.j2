@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+[Unit]
+Description=PXE MAP API
+After=network.target
+
+[Service]
+Type=simple
+User={{ pxe_map_api_user }}
+Group={{ pxe_map_api_group }}
+EnvironmentFile={{ pxe_map_api_config_dir }}/env
+WorkingDirectory={{ pxe_map_api_app_dir }}
+ExecStart=/bin/sh -c '{{ pxe_map_api_venv_dir }}/bin/uvicorn app.main:app --host "${PXE_MAP_BIND%%:*}" --port "${PXE_MAP_BIND##*:}"'
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths={{ pxe_map_api_dir }}
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

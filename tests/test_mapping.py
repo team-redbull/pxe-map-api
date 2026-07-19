@@ -3,12 +3,15 @@ from pathlib import Path
 import pytest
 
 from app.mapping import (
+    MappingFormatError,
     canonical_mac,
     delete_mapping,
+    list_mappings,
     mac_path,
     read_mapping,
     validate_ipxe_url,
     write_mapping,
+    write_mapping_exclusive,
 )
 
 
@@ -64,6 +67,36 @@ class TestWriteMapping:
     def test_round_trip_read(self, tmp_path: Path):
         write_mapping(tmp_path, "aabbccddee01", "http://example/script")
         assert read_mapping(tmp_path, "aabbccddee01") == "http://example/script"
+
+
+class TestWriteMappingExclusive:
+    def test_creates_when_absent(self, tmp_path: Path):
+        write_mapping_exclusive(tmp_path, "aabbccddee01", "http://example/a")
+        assert read_mapping(tmp_path, "aabbccddee01") == "http://example/a"
+
+    def test_raises_file_exists_error_and_leaves_original_untouched(self, tmp_path: Path):
+        write_mapping_exclusive(tmp_path, "aabbccddee01", "http://example/a")
+        with pytest.raises(FileExistsError):
+            write_mapping_exclusive(tmp_path, "aabbccddee01", "http://example/b")
+        assert read_mapping(tmp_path, "aabbccddee01") == "http://example/a"
+
+    def test_leaves_no_tmp_file(self, tmp_path: Path):
+        write_mapping_exclusive(tmp_path, "aabbccddee01", "http://example/a")
+        assert list(tmp_path.glob("*.tmp")) == []
+
+
+class TestReadMappingCorruptFile:
+    def test_raises_mapping_format_error_when_no_chain_line(self, tmp_path: Path):
+        (tmp_path / "aabbccddee01.ipxe").write_text("garbage, no such directive\n")
+        with pytest.raises(MappingFormatError):
+            read_mapping(tmp_path, "aabbccddee01")
+
+
+class TestListMappingsSkipsCorruptFiles:
+    def test_corrupt_file_does_not_break_the_listing(self, tmp_path: Path):
+        write_mapping(tmp_path, "aabbccddee01", "http://example/a")
+        (tmp_path / "aabbccddee02.ipxe").write_text("garbage\n")
+        assert list_mappings(tmp_path) == [("aabbccddee01", "http://example/a")]
 
 
 class TestMacPath:

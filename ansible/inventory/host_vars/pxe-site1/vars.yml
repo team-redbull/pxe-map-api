@@ -1,0 +1,8 @@
+---
+# Non-secret per-site overrides for pxe-site1. Defaults (pxe_map_api_dir,
+# pxe_map_api_local_mirror) come from group_vars/pxe_map_api_sites.yml -
+# only override here if this specific site needs something different, e.g.:
+#
+# pxe_map_api_bind: "10.10.1.5:8080"   # this site's management-facing IP,
+#                                       # instead of the 0.0.0.0:8080 default
+#                                       # (see DEPLOY.md "Bind address")
