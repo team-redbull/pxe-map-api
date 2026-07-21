@@ -3,7 +3,17 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 logger = logging.getLogger("pxe_map_api")
+
+# Loads .env into os.environ if one exists (searches the cwd and upward).
+# override=False (the default) means it never clobbers a variable that's
+# already set - so in production, where systemd's EnvironmentFile= has
+# already populated the environment before this process starts, this is a
+# no-op (no .env file there anyway). Locally, it means `.env` values are
+# picked up automatically - no more `set -a; source .env; set +a` needed.
+load_dotenv()
 
 
 class Config:

@@ -12,18 +12,24 @@ each safety check in `app/mapping.py` exists.
 .venv/bin/pytest -v
 
 # run locally
-set -a; source .env; set +a   # see "Local env" below
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080   # reads .env automatically, see "Local env" below
 ```
 
 ## Local env
 
-Config is read directly from `os.environ` (`app/config.py`) - there is no
-dotenv auto-loading, by design, to keep runtime deps minimal for the
-air-gapped RHEL deployment. A `.env` file is **not** picked up automatically.
+`app/config.py` calls `load_dotenv()` (`python-dotenv`) at import time, so
+`.env` is picked up automatically - no `export`/`source` needed. This is a
+**deliberate reversal** of the original design (which avoided the
+dependency entirely for a minimal air-gapped runtime) - confirmed with the
+user; don't revert to manual sourcing without checking first.
+`load_dotenv()`'s default `override=False` means it never clobbers a
+variable already present in the environment, so this is a no-op in
+production (systemd's `EnvironmentFile=` has already populated the
+environment before the process starts, and there's no `.env` file there
+anyway) - the new dependency only ever does anything for local dev.
 
 1. `cp .env.example .env` (`.env` is git-ignored)
-2. Load it before running the server: `set -a; source .env; set +a`
+2. Fill in real values and just run the server - no sourcing step.
 
 Production (5 site VMs) is deployed from a **separate** repo,
 `pxe-map-api-ansible` (checked out as a sibling directory - the Ansible
@@ -96,7 +102,10 @@ checkout of this one.
 ## Conventions / constraints (do not relax without re-reading SPEC.md)
 
 - No new runtime dependencies beyond `requirements.txt` without a strong
-  reason - deploys are air-gapped, installed from a local package mirror.
+  reason - deploys are air-gapped, installed from a local package mirror
+  (`python-dotenv` is the one user-confirmed exception - see "Local env").
+  Any new addition means updating the mirror too, on all 5 sites - flag
+  that in `pxe-map-api-ansible`'s `DEPLOY.md` "Prerequisites" list.
 - Never accept `https://` for `ipxe_url` - iPXE's TLS ciphers are too old
   for OCP ingress; this must stay a hard rejection, not a warning.
 - `canonical_mac` rejects malformed input, it does not try to fix it - a

@@ -44,19 +44,24 @@ A malformed MAC on `DELETE` still returns `422`, same as every other route.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt   # includes test deps
+.venv/bin/pip install -r requirements.txt pytest httpx   # pytest/httpx are test-only, not in requirements.txt
 
-export PXE_MAP_DIR=/tmp/pxe-map-test
-export PXE_MAP_TOKEN=dev-token
-mkdir -p "$PXE_MAP_DIR"
+cp .env.example .env   # fill in real values
+mkdir -p "$(grep PXE_MAP_DIR .env | cut -d= -f2)"
 
 .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
+`.env` is loaded automatically (`python-dotenv`, see `app/config.py`) - no
+`export`/`source` needed. It's only ever read locally: production loads
+its environment from systemd's `EnvironmentFile=` before this process even
+starts (see `DEPLOY.md`), and `load_dotenv()`'s default `override=False`
+means it never touches a variable systemd already set.
+
 ## Tests
 
 ```bash
-.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install -r requirements.txt pytest httpx
 .venv/bin/python -m pytest tests/ -v
 ```
 
