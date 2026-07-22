@@ -49,7 +49,7 @@ python3 -m venv .venv
 cp .env.example .env   # fill in real values
 mkdir -p "$(grep PXE_MAP_DIR .env | cut -d= -f2)"
 
-.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
+.venv/bin/python -m app.main
 ```
 
 `.env` is loaded automatically (`python-dotenv`, see `app/config.py`) - no
@@ -57,6 +57,16 @@ mkdir -p "$(grep PXE_MAP_DIR .env | cut -d= -f2)"
 its environment from systemd's `EnvironmentFile=` before this process even
 starts (see `DEPLOY.md`), and `load_dotenv()`'s default `override=False`
 means it never touches a variable systemd already set.
+
+`python -m app.main` also picks up `PXE_MAP_BIND` from `.env` to set the
+bind address, so no `--host`/`--port` flags are needed. If you'd rather
+use the uvicorn CLI directly (`uvicorn app.main:app`), you must still pass
+`--host`/`--port` explicitly - it resolves those before importing this
+module, so `.env` can't reach them that way.
+
+Either way, the server now refuses to start (raises before accepting any
+connections) if `PXE_MAP_DIR` isn't set - it doesn't wait for the first
+request to fail.
 
 ## Tests
 

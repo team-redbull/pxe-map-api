@@ -11,8 +11,13 @@ each safety check in `app/mapping.py` exists.
 # tests (pytest.ini puts the repo root on sys.path so this works from anywhere)
 .venv/bin/pytest -v
 
-# run locally
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080   # reads .env automatically, see "Local env" below
+# run locally - reads .env automatically, host/port come from PXE_MAP_BIND
+.venv/bin/python -m app.main
+
+# equivalent, but --host/--port must be given explicitly since the uvicorn
+# CLI resolves them before it ever imports this module (so .env can't reach
+# them there - see "Local env" below)
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
 ## Local env
@@ -30,6 +35,20 @@ anyway) - the new dependency only ever does anything for local dev.
 
 1. `cp .env.example .env` (`.env` is git-ignored)
 2. Fill in real values and just run the server - no sourcing step.
+
+Run with `python -m app.main` (see "Commands" above), not the uvicorn CLI,
+if you want `PXE_MAP_BIND` from `.env` to actually control the bind
+address with no `--host`/`--port` flags - `app/main.py`'s `if __name__ ==
+"__main__"` block reads it after `get_config()` has already run
+`load_dotenv()`. The uvicorn CLI form still works but always needs
+`--host`/`--port` explicitly: it resolves those from real environment
+variables (`UVICORN_HOST`/`UVICORN_PORT`) before it ever imports this
+module, so a `.env` file can't reach them there.
+
+`app/main.py`'s FastAPI `lifespan` calls `get_config()` before the server
+starts accepting connections, so a missing `PXE_MAP_DIR` aborts startup
+with the `RuntimeError` from `app/config.py` under both run forms above -
+it does not wait for the first request.
 
 Production (5 site VMs) is deployed from a **separate** repo,
 `pxe-map-api-ansible` (checked out as a sibling directory - the Ansible
