@@ -16,13 +16,49 @@ startup warning is logged; see "Local env" in `CLAUDE.md`).
 
 | Method | Path              | Body                    | Success | Errors             |
 |--------|-------------------|--------------------------|---------|---------------------|
-| POST   | `/pxe-map`        | `{"mac", "ipxe_url"}`    | 201     | 409 exists, 422 invalid |
+| POST   | `/pxe-map`        | `{"mac", <target>}`      | 201     | 409 exists, 422 invalid |
 | GET    | `/pxe-map/{mac}`  | -                        | 200     | 404 absent, 422 invalid mac |
 | GET    | `/pxe-map`        | -                        | 200     | -                    |
-| PUT    | `/pxe-map/{mac}`  | `{"ipxe_url"}`           | 200     | 422 invalid          |
-| PATCH  | `/pxe-map/{mac}`  | `{"ipxe_url"}`           | 200     | 404 absent, 422 invalid |
+| PUT    | `/pxe-map/{mac}`  | `{<target>}`             | 200     | 422 invalid          |
+| PATCH  | `/pxe-map/{mac}`  | `{<target>}`             | 200     | 404 absent, 422 invalid |
 | DELETE | `/pxe-map/{mac}`  | -                        | 204     | 422 invalid mac (idempotent otherwise, see below) |
+| DELETE | `/pxe-map/{mac}?mce_cluster=<mce>` | -        | 204     | 409 the MAC chains to ANOTHER MCE's boot entry (kept), 422 invalid |
+| PUT    | `/pxe-map/{mce_cluster}/{infra_env}` | `{"ipxe_url", "image_created_at"}` | 200 | 409 older image, 422 invalid |
+| GET    | `/pxe-map/{mce_cluster}/{infra_env}` | -     | 200     | 404 absent, 422 invalid name |
 | GET    | `/healthz`        | -                        | 200     | (no auth)            |
+
+`<target>` is EXACTLY ONE of `"ipxe_url": "http://..."` (the MAC chains
+straight to that URL) or `"infra_env": {"mce_cluster", "name"}` (the MAC
+chains to that InfraEnv's boot entry - see below). Responses carry whichever
+one the MAC has; the other key is left out.
+
+### InfraEnv boot entries
+
+`PUT /pxe-map/{mce_cluster}/{infra_env}` writes
+`/var/www/pxe-map/<mce_cluster>/<infra_env>.ipxe`:
+
+```
+#!ipxe
+# image-created-at: 2026-10-19T10:00:05+00:00
+chain http://<assisted-service-ipxe route>/...?file_name=ipxe-script&api_key=...
+```
+
+A MAC mapped with `"infra_env"` holds a relative `chain
+<mce_cluster>/<infra_env>.ipxe`, which iPXE resolves against the MAC file's own
+URL - so it lands on the same nginx `/pxe-map/` tree, and this service never
+needs to know its own public hostname. Every MAC of an InfraEnv chains through
+one entry, so publishing a regenerated discovery image is one write instead of
+one per host. The MAC may be mapped before its entry exists (install-server
+does exactly that, and publishes the entry once the host's NMStateConfig is in
+the image, before anything powers the host on).
+
+`image_created_at` is the InfraEnv's `status.createdTime` and the write is a
+compare-and-set on it, under a `flock` on the MCE directory: an equal or newer
+image overwrites (so a retry is a 200), an OLDER one is refused with `409` and
+leaves the file alone. Of several installs racing to publish, the newest image
+wins no matter whose request lands last. `mce_cluster` and `infra_env` must be
+lowercase Kubernetes object names (rejected, never fixed up), which also keeps
+them from escaping the pxe-map dir.
 
 `{mac}` is accepted in any common format (colons, dashes, bare hex, mixed
 case) and canonicalized server-side to 12 lowercase hex chars with no
@@ -39,6 +75,13 @@ strict create/update guarantees instead.
 deliberate (see the code comment in `app/routers/mappings.py`): the caller
 uses this on the BMH-deletion path, and idempotent retries should not fail.
 A malformed MAC on `DELETE` still returns `422`, same as every other route.
+
+`DELETE /pxe-map/{mac}?mce_cluster=<mce>` is the CONDITIONAL form
+remove-server uses: if the MAC chains to the boot entry of a DIFFERENT MCE it
+answers `409` and keeps the file (that MCE mapped the machine since), and
+otherwise deletes it - this MCE's entry, a direct-URL entry, or a corrupt
+file. The read-compare-unlink runs under the same `flock` that MAC writes
+take, so a mapping written concurrently is never removed by mistake.
 
 ## Running locally
 
@@ -77,7 +120,8 @@ request to fail.
 
 `tests/test_mapping.py` covers the correctness-critical pure functions
 (MAC canonicalization, URL validation, atomic write, path-traversal
-rejection, idempotent delete). `tests/test_api.py` covers the HTTP layer:
+rejection, idempotent delete, InfraEnv boot entries incl. the compare-and-set
+under concurrent writers). `tests/test_api.py` covers the HTTP layer:
 full CRUD round-trip, auth, and the POST/PATCH/PUT status-code semantics.
 
 ## Deployment (RHEL 9.4, SELinux enforcing, 5 site VMs via Ansible)
@@ -135,7 +179,8 @@ traffic to booting hosts.
 ### nginx (existing, not managed by this service)
 
 This service only writes files; nginx (already configured on the PXE VM)
-serves them read-only:
+serves them read-only. The `location` below already covers the
+`<mce_cluster>/` subdirectories that InfraEnv boot entries live in:
 
 ```nginx
 server {

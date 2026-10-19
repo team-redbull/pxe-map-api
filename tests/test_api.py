@@ -195,6 +195,172 @@ class TestInvalidMacRejectedOnEveryRoute:
         assert "invalid mac" in resp.text.lower()
 
 
+MCE = "ocp4-mce-bat-yam-01"
+INFRA_ENV = "cisco-m6-bat-yam-64c-512gb"
+INFRA_ENV_REF = {"mce_cluster": MCE, "name": INFRA_ENV}
+
+
+class TestMacMappedToAnInfraEnv:
+    def test_put_writes_a_relative_chain_and_reads_back_as_infra_env(self, client, tmp_path):
+        resp = client.put(
+            "/pxe-map/aabbccddee01", json={"infra_env": INFRA_ENV_REF}, headers=auth_headers()
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"mac": "aabbccddee01", "infra_env": INFRA_ENV_REF}
+        assert (tmp_path / "aabbccddee01.ipxe").read_text() == (
+            f"#!ipxe\nchain {MCE}/{INFRA_ENV}.ipxe\n"
+        )
+        assert client.get("/pxe-map/aabbccddee01", headers=auth_headers()).json() == {
+            "mac": "aabbccddee01",
+            "infra_env": INFRA_ENV_REF,
+        }
+
+    def test_mapping_ahead_of_the_infra_env_entry_is_allowed(self, client):
+        # install-server maps MACs first and publishes the entry once the
+        # host's NMStateConfig is in the image; nothing boots in between.
+        resp = client.put(
+            "/pxe-map/aabbccddee01", json={"infra_env": INFRA_ENV_REF}, headers=auth_headers()
+        )
+        assert resp.status_code == 200
+        assert client.get(f"/pxe-map/{MCE}/{INFRA_ENV}", headers=auth_headers()).status_code == 404
+
+    def test_post_and_patch_take_an_infra_env_too(self, client):
+        post = client.post(
+            "/pxe-map",
+            json={"mac": "aabbccddee01", "infra_env": INFRA_ENV_REF},
+            headers=auth_headers(),
+        )
+        assert post.status_code == 201
+        assert post.json() == {"mac": "aabbccddee01", "infra_env": INFRA_ENV_REF}
+        patch = client.patch(
+            "/pxe-map/aabbccddee01", json={"ipxe_url": "http://example/b"}, headers=auth_headers()
+        )
+        assert patch.json() == {"mac": "aabbccddee01", "ipxe_url": "http://example/b"}
+
+    def test_the_listing_shows_each_kind(self, client):
+        client.put("/pxe-map/aabbccddee01", json={"infra_env": INFRA_ENV_REF}, headers=auth_headers())
+        client.put("/pxe-map/aabbccddee02", json={"ipxe_url": "http://example/a"}, headers=auth_headers())
+        assert client.get("/pxe-map", headers=auth_headers()).json() == [
+            {"mac": "aabbccddee01", "infra_env": INFRA_ENV_REF},
+            {"mac": "aabbccddee02", "ipxe_url": "http://example/a"},
+        ]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"ipxe_url": "http://example/a", "infra_env": INFRA_ENV_REF},
+            {"infra_env": {"mce_cluster": "../etc", "name": INFRA_ENV}},
+            {"infra_env": {"mce_cluster": MCE, "name": "Upper"}},
+        ],
+    )
+    def test_anything_but_exactly_one_valid_target_is_422(self, client, body):
+        resp = client.put("/pxe-map/aabbccddee01", json=body, headers=auth_headers())
+        assert resp.status_code == 422
+
+
+class TestConditionalDelete:
+    def _map(self, client, mac, mce):
+        client.put(
+            f"/pxe-map/{mac}",
+            json={"infra_env": {"mce_cluster": mce, "name": INFRA_ENV}},
+            headers=auth_headers(),
+        )
+
+    def test_this_mces_entry_is_204_and_gone(self, client):
+        self._map(client, "aabbccddee01", MCE)
+        resp = client.delete(f"/pxe-map/aabbccddee01?mce_cluster={MCE}", headers=auth_headers())
+        assert resp.status_code == 204
+        assert client.get("/pxe-map/aabbccddee01", headers=auth_headers()).status_code == 404
+
+    def test_another_mces_entry_is_409_and_kept(self, client):
+        self._map(client, "aabbccddee01", "ocp4-mce-other")
+        resp = client.delete(f"/pxe-map/aabbccddee01?mce_cluster={MCE}", headers=auth_headers())
+        assert resp.status_code == 409
+        assert "ocp4-mce-other" in resp.json()["detail"]
+        assert client.get("/pxe-map/aabbccddee01", headers=auth_headers()).status_code == 200
+
+    def test_absent_is_still_204(self, client):
+        resp = client.delete(f"/pxe-map/aabbccddee01?mce_cluster={MCE}", headers=auth_headers())
+        assert resp.status_code == 204
+
+    def test_without_the_parameter_it_is_unconditional_as_before(self, client):
+        self._map(client, "aabbccddee01", "ocp4-mce-other")
+        assert client.delete("/pxe-map/aabbccddee01", headers=auth_headers()).status_code == 204
+        assert client.get("/pxe-map/aabbccddee01", headers=auth_headers()).status_code == 404
+
+    def test_an_invalid_mce_name_is_422(self, client):
+        resp = client.delete("/pxe-map/aabbccddee01?mce_cluster=Bad_Name", headers=auth_headers())
+        assert resp.status_code == 422
+
+
+class TestInfraEnvBoot:
+    URL = f"/pxe-map/{MCE}/{INFRA_ENV}"
+    T0 = "2026-10-19T10:00:05Z"
+    T1 = "2026-10-19T10:00:35Z"
+
+    def _put(self, client, ipxe_url, at, **kwargs):
+        return client.put(
+            self.URL,
+            json={"ipxe_url": ipxe_url, "image_created_at": at},
+            headers=auth_headers(**kwargs),
+        )
+
+    def test_put_writes_the_file_nginx_serves_and_get_reads_it(self, client, tmp_path):
+        resp = self._put(client, "http://as/ipxe-script?api_key=k", self.T0)
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "mce_cluster": MCE,
+            "infra_env": INFRA_ENV,
+            "ipxe_url": "http://as/ipxe-script?api_key=k",
+            "image_created_at": self.T0,
+        }
+        assert (tmp_path / MCE / f"{INFRA_ENV}.ipxe").exists()
+        assert client.get(self.URL, headers=auth_headers()).json() == resp.json()
+
+    def test_a_newer_image_replaces_an_older_one(self, client):
+        self._put(client, "http://as/old", self.T0)
+        assert self._put(client, "http://as/new", self.T1).status_code == 200
+        assert client.get(self.URL, headers=auth_headers()).json()["ipxe_url"] == "http://as/new"
+
+    def test_an_older_image_is_409_and_changes_nothing(self, client):
+        self._put(client, "http://as/new", self.T1)
+        resp = self._put(client, "http://as/old", self.T0)
+        assert resp.status_code == 409
+        assert "newer" in resp.json()["detail"]
+        assert client.get(self.URL, headers=auth_headers()).json()["ipxe_url"] == "http://as/new"
+
+    def test_a_retry_of_the_same_image_is_200(self, client):
+        assert self._put(client, "http://as/a", self.T0).status_code == 200
+        assert self._put(client, "http://as/a", self.T0).status_code == 200
+
+    def test_absent_is_404(self, client):
+        assert client.get(self.URL, headers=auth_headers()).status_code == 404
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"ipxe_url": "https://as/a", "image_created_at": "2026-10-19T10:00:05Z"},
+            {"ipxe_url": "http://as/a", "image_created_at": "2026-10-19T10:00:05"},  # no zone
+            {"ipxe_url": "http://as/a"},
+        ],
+    )
+    def test_an_invalid_body_is_422(self, client, body):
+        assert client.put(self.URL, json=body, headers=auth_headers()).status_code == 422
+
+    @pytest.mark.parametrize("path", [f"/pxe-map/Upper/{INFRA_ENV}", f"/pxe-map/{MCE}/bad_name"])
+    def test_an_invalid_name_in_the_path_is_422(self, client, path):
+        resp = client.put(
+            path,
+            json={"ipxe_url": "http://as/a", "image_created_at": self.T0},
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 422
+
+    def test_requires_auth(self, client):
+        assert self._put(client, "http://as/a", self.T0, token="wrong").status_code == 401
+
+
 class TestPostConcurrencyGuarantee:
     def test_post_never_overwrites_a_racing_create(self, client):
         # write_mapping_exclusive uses os.link, which fails atomically if the

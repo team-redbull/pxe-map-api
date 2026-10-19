@@ -13,7 +13,7 @@ validation, so these types are unambiguous in this codebase.
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
-from app.mapping import MappingFormatError
+from app.mapping import ForeignMappingError, MappingFormatError, StaleInfraEnvBootError
 
 
 async def _mapping_not_found(request: Request, exc: FileNotFoundError) -> JSONResponse:
@@ -27,6 +27,24 @@ async def _mapping_already_exists(request: Request, exc: FileExistsError) -> JSO
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
         content={"detail": "mapping already exists"},
+    )
+
+
+async def _infra_env_boot_stale(request: Request, exc: StaleInfraEnvBootError) -> JSONResponse:
+    # The message names both timestamps: a caller that lost the race reads it
+    # as "a newer image is already published", which is success for it.
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": str(exc)},
+    )
+
+
+async def _mapping_foreign(request: Request, exc: ForeignMappingError) -> JSONResponse:
+    # The message names the MCE the mapping belongs to; the caller reports it
+    # as "kept", not as a failure.
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": str(exc)},
     )
 
 
@@ -52,5 +70,7 @@ async def _invalid_input(request: Request, exc: ValueError) -> JSONResponse:
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(FileNotFoundError, _mapping_not_found)
     app.add_exception_handler(FileExistsError, _mapping_already_exists)
+    app.add_exception_handler(StaleInfraEnvBootError, _infra_env_boot_stale)
+    app.add_exception_handler(ForeignMappingError, _mapping_foreign)
     app.add_exception_handler(MappingFormatError, _mapping_corrupt)
     app.add_exception_handler(ValueError, _invalid_input)

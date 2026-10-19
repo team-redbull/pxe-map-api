@@ -77,9 +77,16 @@ Follows FastAPI's official "Bigger Applications - Multiple Files" layout
   correctness lives: MAC canonicalization (reject, never sanitize), URL
   validation (http:// only, no CR/LF), path construction (traversal
   rejection), atomic write (`write_mapping`) and atomic exclusive-create
-  (`write_mapping_exclusive`) + `restorecon`. Raises plain `ValueError` /
-  `FileNotFoundError` / `FileExistsError` / `MappingFormatError` - never
-  FastAPI types. Unit tested in `tests/test_mapping.py`.
+  (`write_mapping_exclusive`) + `restorecon`. Also the InfraEnv BOOT ENTRIES:
+  `<dir>/<mce_cluster>/<infra_env>.ipxe` (`write_infra_env_boot`, a
+  compare-and-set on `image_created_at` under `flock` on the MCE directory),
+  which a MAC file can chain to with a RELATIVE `chain
+  <mce_cluster>/<infra_env>.ipxe` (`infra_env_target`; iPXE resolves it
+  against the MAC file's URL). Both names must be lowercase Kubernetes object
+  names (`validate_name`, reject, never sanitize). Raises plain `ValueError`
+  / `FileNotFoundError` / `FileExistsError` / `MappingFormatError` /
+  `StaleInfraEnvBootError` / `ForeignMappingError` - never FastAPI types.
+  Unit tested in `tests/test_mapping.py`.
 - `app/config.py` - env-driven config. `get_config()` is `@lru_cache`d and
   injected via `Depends`, not read once into a module global - tests
   override it per-test with `get_config.cache_clear()` after
@@ -100,12 +107,22 @@ Follows FastAPI's official "Bigger Applications - Multiple Files" layout
   that split without checking with the user first.
 - `app/exceptions.py` - registers global handlers
   (`FileNotFoundError`->404, `FileExistsError`->409,
+  `StaleInfraEnvBootError`->409, `ForeignMappingError`->409,
   `MappingFormatError`->500, `ValueError`->422 safety net) so routes don't
   each need their own try/except around `mapping.py` calls.
-- `app/routers/mappings.py` - the `/pxe-map*` routes, `APIRouter(prefix=...,
-  dependencies=[Depends(require_auth)])` so auth is declared once, not
-  per-route. Thin - routes call straight into `mapping.py` and let
-  `app/exceptions.py` translate failures. Tested in `tests/test_api.py`.
+- `app/routers/mappings.py` - the `/pxe-map` and `/pxe-map/{mac}` routes,
+  `APIRouter(prefix=..., dependencies=[Depends(require_auth)])` so auth is
+  declared once, not per-route. Thin - routes call straight into `mapping.py`
+  and let `app/exceptions.py` translate failures. A MAC's body takes EXACTLY
+  ONE of `ipxe_url` / `infra_env` (`_MappingTarget` in `app/schemas.py`);
+  responses use `response_model_exclude_none`, so a URL mapping's JSON is
+  unchanged from before boot entries existed. Tested in `tests/test_api.py`.
+- `app/routers/infra_env_boot.py` - `PUT`/`GET
+  /pxe-map/{mce_cluster}/{infra_env}`, the boot entries. Two path segments,
+  so they never collide with the one-segment `/pxe-map/{mac}` routes. Written
+  by the `workflows` repo's install-server (`team-redbull/workflows`,
+  `publish_infra_env_boot`) once the InfraEnv's discovery image includes the
+  host's NMStateConfig; that repo must not be deployed ahead of this one.
 - `app/routers/health.py` - `/healthz`, no auth.
 - `app/main.py` - creates the `FastAPI()` app, registers the exception
   handlers, installs the request-logging middleware (`@app.middleware`,
@@ -132,6 +149,20 @@ checkout of this one.
 - `DELETE` on an absent mapping is a deliberate `204`; a malformed MAC on
   DELETE is `422` (a caller bug, not "already gone") - see comment in
   `app/routers/mappings.py`. Don't collapse these two cases back together.
+- An InfraEnv boot entry never goes backwards: an older `image_created_at`
+  is a `409` that leaves the file alone, an equal one overwrites (retries
+  must succeed). Don't turn it into last-writer-wins - parallel installs of
+  one InfraEnv publish in arbitrary order, and the caller treats the 409 as
+  "a newer image is already published", i.e. success.
+- A MAC may be mapped to an InfraEnv boot entry that doesn't exist yet - the
+  caller publishes the entry later, before the host is powered on. Don't add
+  an existence check to `PUT /pxe-map/{mac}`.
+- `DELETE /pxe-map/{mac}?mce_cluster=X` must never remove a MAC that chains
+  to ANOTHER MCE's boot entry (409, `ForeignMappingError`) - remove-server on
+  one MCE must not take the boot away from a host another MCE mapped since.
+  The compare and the unlink share one `flock` (the pxe-map dir) with every
+  MAC write; keep MAC writes under it. Without the parameter, DELETE stays
+  unconditional (install-server's rollback, which holds the machine's lock).
 - Don't disable SELinux or loosen `/var/www/pxe-map` permissions; the
   `restorecon` call in `write_mapping`/`write_mapping_exclusive` is
   required, not optional (it's wrapped in `try/except FileNotFoundError`

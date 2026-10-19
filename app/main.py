@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 
 from app.config import get_config
 from app.exceptions import register_exception_handlers
-from app.routers import health, mappings
+from app.routers import health, infra_env_boot, mappings
 
 # No handler/level configured here on purpose - uvicorn/systemd owns log
 # configuration for this process; this module only emits to its logger and
@@ -54,6 +54,7 @@ async def log_requests(request: Request, call_next):
 
 app.include_router(health.router)
 app.include_router(mappings.router)
+app.include_router(infra_env_boot.router)
 
 
 if __name__ == "__main__":
