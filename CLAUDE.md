@@ -163,6 +163,11 @@ checkout of this one.
   The compare and the unlink share one `flock` (the pxe-map dir) with every
   MAC write; keep MAC writes under it. Without the parameter, DELETE stays
   unconditional (install-server's rollback, which holds the machine's lock).
+- Every file this service writes is `0644` and every directory `0755` -
+  set explicitly (`os.fchmod` in `_write_tmp`, `os.chmod` on the MCE dir),
+  because `tempfile.mkstemp` creates `0600` and nginx reads the files as its
+  own user: a `0600` mapping is a 403 at boot. That is the documented mode
+  (the Ansible role normalizes to it too), not a loosening - don't drop it.
 - Don't disable SELinux or loosen `/var/www/pxe-map` permissions; the
   `restorecon` call in `write_mapping`/`write_mapping_exclusive` is
   required, not optional (it's wrapped in `try/except FileNotFoundError`

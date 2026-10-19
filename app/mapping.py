@@ -114,6 +114,12 @@ def _write_tmp(path: Path, content: str) -> Path:
     # same MAC never share a temp file.
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.stem}.", suffix=".ipxe.tmp")
     try:
+        # mkstemp creates the file 0600, and the rename keeps that mode - but
+        # nginx serves these as its own user, so a 0600 mapping is a 403 at
+        # boot time. 0644 is the documented mode (README; the Ansible role
+        # normalizes existing files to it), set here so every write has it,
+        # not only the files present when the playbook last ran.
+        os.fchmod(fd, 0o644)
         with os.fdopen(fd, "w") as f:
             f.write(content)
     except BaseException:
@@ -246,7 +252,10 @@ def write_infra_env_boot(
     if image_created_at.tzinfo is None:
         raise ValueError("image_created_at must carry a timezone")
     path = infra_env_path(base_dir, mce_cluster, infra_env)
-    path.parent.mkdir(mode=0o755, exist_ok=True)
+    path.parent.mkdir(exist_ok=True)
+    # Explicit, not via mkdir's mode: that is masked by the process umask, and
+    # nginx needs to traverse this directory whatever the service's umask is.
+    os.chmod(path.parent, 0o755)
     _restorecon(path.parent)
     content = (
         f"#!ipxe\n{_IMAGE_CREATED_AT_PREFIX}{image_created_at.isoformat()}\nchain {ipxe_url}\n"

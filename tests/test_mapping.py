@@ -1,3 +1,5 @@
+import os
+import stat
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -81,6 +83,29 @@ class TestWriteMapping:
     def test_round_trip_read(self, tmp_path: Path):
         write_mapping(tmp_path, "aabbccddee01", "http://example/script")
         assert read_mapping(tmp_path, "aabbccddee01") == "http://example/script"
+
+
+class TestFileModesNginxCanRead:
+    """nginx serves these as its own user: 0600 (mkstemp's default) is a 403 at boot."""
+
+    @pytest.fixture(autouse=True)
+    def _strict_umask(self):
+        old = os.umask(0o077)  # the strictest a service could run with
+        yield
+        os.umask(old)
+
+    def test_a_mac_file_is_0644(self, tmp_path: Path):
+        write_mapping(tmp_path, "aabbccddee01", "http://example/script")
+        assert stat.S_IMODE((tmp_path / "aabbccddee01.ipxe").stat().st_mode) == 0o644
+
+    def test_an_exclusive_create_is_0644(self, tmp_path: Path):
+        write_mapping_exclusive(tmp_path, "aabbccddee01", "http://example/script")
+        assert stat.S_IMODE((tmp_path / "aabbccddee01.ipxe").stat().st_mode) == 0o644
+
+    def test_a_boot_entry_is_0644_in_a_0755_directory(self, tmp_path: Path):
+        write_infra_env_boot(tmp_path, MCE, INFRA_ENV, "http://as/a", T0)
+        assert stat.S_IMODE((tmp_path / MCE).stat().st_mode) == 0o755
+        assert stat.S_IMODE((tmp_path / MCE / f"{INFRA_ENV}.ipxe").stat().st_mode) == 0o644
 
 
 class TestWriteMappingExclusive:
